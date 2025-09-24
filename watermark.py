@@ -1,4 +1,3 @@
-
 import os
 import argparse
 from PIL import Image, ImageDraw, ImageFont
@@ -8,24 +7,70 @@ def get_shooting_date(image_path):
     """Extracts the shooting date from the image's EXIF data."""
     try:
         exif_dict = piexif.load(image_path)
-        if piexif.ImageIFD.DateTime in exif_dict["Exif"]:
-            date_str = exif_dict["Exif"][piexif.ImageIFD.DateTime].decode("utf-8")
+        date_str = None
+        
+        # Prioritize DateTimeOriginal from the Exif block
+        if "Exif" in exif_dict and exif_dict["Exif"] and piexif.ExifIFD.DateTimeOriginal in exif_dict["Exif"]:
+            date_str = exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal].decode("utf-8")
+        # Fallback to DateTimeDigitized
+        elif "Exif" in exif_dict and exif_dict["Exif"] and piexif.ExifIFD.DateTimeDigitized in exif_dict["Exif"]:
+            date_str = exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized].decode("utf-8")
+        # Fallback to the general DateTime tag
+        elif "0th" in exif_dict and exif_dict["0th"] and piexif.ImageIFD.DateTime in exif_dict["0th"]:
+            date_str = exif_dict["0th"][piexif.ImageIFD.DateTime].decode("utf-8")
+
+        if date_str:
             return date_str.split(" ")[0].replace(":", "-")
+            
     except Exception as e:
         print(f"Could not read EXIF data from {image_path}: {e}")
     return None
 
-def add_watermark(image_path, text, output_path, font_size, color, position):
+def add_watermark(image_path, text, output_path, font_size, color, position, font_path):
     """Adds a text watermark to an image."""
     try:
-        image = Image.open(image_path).convert("RGBA")
+        image = Image.open(image_path)
+
+        # Check for and apply EXIF orientation
+        try:
+            exif_dict = piexif.load(image.info['exif'])
+            if piexif.ImageIFD.Orientation in exif_dict['0th']:
+                orientation = exif_dict['0th'].pop(piexif.ImageIFD.Orientation)
+                if orientation == 2:
+                    image = image.transpose(Image.FLIP_LEFT_RIGHT)
+                elif orientation == 3:
+                    image = image.rotate(180)
+                elif orientation == 4:
+                    image = image.transpose(Image.FLIP_TOP_BOTTOM)
+                elif orientation == 5:
+                    image = image.rotate(-90, expand=True).transpose(Image.FLIP_LEFT_RIGHT)
+                elif orientation == 6:
+                    image = image.rotate(-90, expand=True)
+                elif orientation == 7:
+                    image = image.rotate(90, expand=True).transpose(Image.FLIP_LEFT_RIGHT)
+                elif orientation == 8:
+                    image = image.rotate(90, expand=True)
+        except (KeyError, AttributeError, TypeError, piexif.InvalidImageDataError):
+            # Cases: image has no exif, exif has no orientation, or other errors
+            pass
+
+        image = image.convert("RGBA")
         txt_layer = Image.new("RGBA", image.size, (255, 255, 255, 0))
         
         try:
-            font = ImageFont.truetype("arial.ttf", font_size)
+            font_to_use = font_path
+            if not font_to_use:
+                # Default to the font file in the 'fonts' directory
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                font_to_use = os.path.join(script_dir, "fonts", "Roboto-Regular.ttf")
+
+            font = ImageFont.truetype(font_to_use, font_size)
         except IOError:
             font = ImageFont.load_default()
-            print("Arial font not found. Using default font.")
+            if font_path:
+                print(f"Font not found at {font_path}. Using default font (font size may not apply).")
+            else:
+                print("Default font 'Roboto-Regular.ttf' not found in 'fonts' folder. Using default font (font size may not apply).")
 
         draw = ImageDraw.Draw(txt_layer)
         
@@ -63,6 +108,7 @@ def main():
     parser.add_argument("--position", type=str, default="bottom-right", 
                         choices=["top-left", "center", "bottom-right"],
                         help="Position of the watermark.")
+    parser.add_argument("--font-path", type=str, default=None, help="Path to a .ttf or .otf font file.")
 
     args = parser.parse_args()
 
@@ -84,7 +130,7 @@ def main():
             output_filename = os.path.splitext(filename)[0] + "_watermarked.jpg"
             output_path = os.path.join(output_dir, output_filename)
             
-            add_watermark(image_path, date_str, output_path, args.font_size, args.color, args.position)
+            add_watermark(image_path, date_str, output_path, args.font_size, args.color, args.position, args.font_path)
 
 if __name__ == "__main__":
     main()
